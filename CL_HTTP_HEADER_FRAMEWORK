@@ -1,555 +1,128 @@
-class CL_HTTP_HEADER_FRAMEWORK definition
-  public
-  create public .
+CLASS /lrn/cl_s4d400_btt_debug DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
 
-public section.
+  PUBLIC SECTION.
 
-  types:
-    BEGIN OF http_header_struct, name TYPE http_header_name, header_type TYPE char1, END OF http_header_struct .
-  types:
-    header_names_table TYPE TABLE OF http_header_struct .
-
-  constants NONCE_PSEUDOHEADER_NAME type STRING value '~sap_csp_nonce' ##NO_TEXT.
-  constants HASH_PSEUDOHEADER_NAME type STRING value '~sap_csp_hash' ##NO_TEXT.
-  constants NONCE_PLACEHOLDER type STRING value 'nonce' ##NO_TEXT.
-  constants HASH_PLACEHOLDER type STRING value 'hash-algorithm' ##NO_TEXT.
-  constants ESCAPE_SYMBOL type STRING value '%=' ##NO_TEXT.
-  constants CONTENT_SECURITY_POLICY_HEADER type HTTP_HEADER_REG-HEADER_NAME value 'Content-Security-Policy' ##NO_TEXT.
-  constants CONTENT_SECURITY_POL_RO_HEADER type HTTP_HEADER_REG-HEADER_NAME value 'Content-Security-Policy-Report-Only' ##NO_TEXT.
-  constants REPORT_URI_PATH type STRING value '/sap/bc/csp/report' ##NO_TEXT.
-  constants REPORT_URI_REP_ONLY_PATH type STRING value '/sap/bc/csp/report_rep_only' ##NO_TEXT.
-
-  class-methods ADD_HEADERS
-    importing
-      !HEADER_TAB type HEADER_NAMES_TABLE
-      !NONCE type CHAR32 optional
-      !HASH type STRING optional
-      !SERVICE_PATH type STRING
-      !VIRTUAL_HOST type HTTP_HEADER_REG-VIRTUAL_HOST
-      !MIMETYPE type CHAR32
-    exporting
-      !EXPORT_HEADER type TIHTTPNVP .
-  class-methods ADD_SECURITY_HEADERS_TO_REQ
-    importing
-      !REQUEST type ref to IF_HTTP_REQUEST
-      !IS_ALIAS type ABAP_BOOLEAN default ABAP_TRUE
-    changing
-      !RESPONSE type ref to IF_HTTP_RESPONSE
-    raising
-      CX_HTTP_HEADER_FRAMEWORK_API .
-  class-methods CLASS_CONSTRUCTOR .
-  class-methods GET_SUPPORTED_HEADER_NAMES
-    importing
-      !MIME_TYPE type CHAR32
-    exporting
-      !HEADER_TAB type HEADER_NAMES_TABLE .
-  class-methods GET_TRUSTNAME_FROM_DBSTRING
-    importing
-      !I_DB_CONTENT type STRING
-      !I_RESULT_TAB_DOLLAR type MATCH_RESULT_TAB
-      !I_RESULT_TAB_DOLLAR_INDEX type SY-INDEX
-      !I_RESULT_TAB_DOLLAR_WA type ref to MATCH_RESULT
-    exporting
-      !E_TRUST_LIST_NAME type TRUSTED_SITE_LIST_NAME
-      !E_ADD_SPACE type ABAP_BOOL
-      !E_ADD_SEMIKOLON type ABAP_BOOL
-      !E_END_OF_PROCESSED_STRING_PART type I .
-  class-methods REMOVE_ESCAPE_SYMBOLS
-    importing
-      !DB_CONTENT type STRING
-      !RESULT_TAB_DOLLAR type MATCH_RESULT_TAB
-    exporting
-      !CHANGED_CONTENT type STRING
-      !CHANGED_RESULT_TAB type MATCH_RESULT_TAB .
+    INTERFACES if_oo_adt_classrun .
   PROTECTED SECTION.
-    CLASS-DATA db_access TYPE REF TO if_http_header_framework_db.
-    CLASS-DATA: g_report_uri          TYPE string,
-                g_report_uri_rep_only TYPE string.
-private section.
-
-  class-data G_HASH type STRING .
-  class-data G_NONCE type CHAR32 .
-
-  class-methods FIND_SERVICE_PATH
-    importing
-      !CHECK type HTTP_SERVICE_SHORT
-      !INPUT type STRING
-    returning
-      value(RV_CHECK_RET) type ABAP_BOOL .
-  class-methods EXPAND_CONTENT
-    importing
-      !DB_CONTENT type STRING
-      !REPORT_URI type STRING
-    exporting
-      !HEADER_CONTENT type STRING .
-  class-methods GET_TRUSTED_LIST
-    importing
-      !NAME type TRUSTED_SITE_LIST_NAME
-    exporting
-      !RESULT type STRING .
+  PRIVATE SECTION.
 ENDCLASS.
 
 
 
-CLASS CL_HTTP_HEADER_FRAMEWORK IMPLEMENTATION.
+CLASS /LRN/CL_S4D400_BTT_DEBUG IMPLEMENTATION.
 
 
-  METHOD add_headers.
-    g_hash = hash.
-    g_nonce = nonce.
-    IF service_path IS INITIAL.
-      RETURN.
-    ENDIF.
-    DATA service_path_last_pos TYPE i.
-    DATA l_service_path LIKE service_path.
-    service_path_last_pos = strlen( service_path ) - 1.
-    IF service_path+service_path_last_pos(1) <> '/'.
-      CONCATENATE service_path '/' INTO l_service_path.
-    ELSE.
-      l_service_path = service_path.
-    ENDIF.
+  METHOD if_oo_adt_classrun~main.
+
+* Declarations
+**********************************************************************
+    " Types
+    TYPES t_amount     TYPE p LENGTH 8 DECIMALS 2.
+    TYPES t_percentage TYPE p LENGTH 2 DECIMALS 1.
+
+    " Input for the calculation
+    CONSTANTS loan_total        TYPE t_amount     VALUE '50000.00'.
+    CONSTANTS interest_rate     TYPE t_percentage VALUE '2.0'.
+    CONSTANTS payment_month     TYPE t_amount     VALUE '1000.00'.
+    CONSTANTS spec_repay_year   TYPE t_amount     VALUE '10000.00'.  " Extra payment per year
+    CONSTANTS spec_repay_mode   TYPE c LENGTH 1   VALUE 'Q'.         "'A' Annual, 'H' every half year, 'Q' 'every Quarter
+
+    " Output
+    DATA repayment_plan TYPE TABLE OF string.
+
+    " Helper Variables
+    DATA loan_remaining         TYPE t_amount.
+    DATA interest_month         TYPE t_amount.
+    DATA repayment_month        TYPE t_amount.
+    DATA interest_total         TYPE t_amount.
+    DATA special_repayment      TYPE t_amount.
+
+    DATA months_counter         TYPE i.
+    DATA months_btw_spec_pay    TYPE i.
 
 
-    LOOP AT header_tab INTO DATA(header).
-      DATA header_name_string TYPE string.
-      header_name_string = header-name.
+* Processing
+**********************************************************************
 
-      DATA content TYPE string.
-      TRANSLATE header-name TO LOWER CASE.
-      db_access->get_header_register(
-        EXPORTING
-          virtual_host  = virtual_host
-          header_name   = header-name
-        IMPORTING
-          table = DATA(table)
-      ).
+    " Initializations
+    loan_remaining = loan_total.
 
-      SORT table DESCENDING BY serv_path_length.
-      LOOP AT table INTO DATA(wa).
-        DATA(match) = find_service_path(
-          EXPORTING
-            check        = wa-service_path
-            input        = l_service_path
-        ).
+    CASE spec_repay_mode.
+      WHEN 'A'.
+        months_btw_spec_pay = 12.
+        special_repayment   = spec_repay_year.
+      WHEN 'H'.
+        months_btw_spec_pay = 6.
+        special_repayment   = spec_repay_year / 2.
+      WHEN 'Q'.
+        months_btw_spec_pay = 3.
+        special_repayment   = spec_repay_year / 4.
+      WHEN OTHERS.
+        out->write( 'Invalid extra payment mode'  ).
+        EXIT.
+    ENDCASE.
 
-        IF match = abap_true .
-          IF wa-content IS INITIAL.
-            EXIT. "no header should be written
-          ENDIF.
-          IF header-header_type = 'C'.
-            expand_content( EXPORTING db_content = wa-content report_uri = g_report_uri IMPORTING header_content = content ).
-          ELSEIF header-header_type = 'R'.
-            expand_content( EXPORTING db_content = wa-content report_uri = g_report_uri_rep_only IMPORTING header_content = content ).
-          ELSE.
-            content = wa-content.
-          ENDIF.
-          CONDENSE content.
-          DATA exp_wa LIKE LINE OF export_header.
-          exp_wa-name = header_name_string.
-          exp_wa-value = content.
-          APPEND exp_wa TO export_header.
+    " Calculations
+    DO.
+
+      IF loan_remaining <= 0.
+        EXIT.
+      ENDIF.
+
+      DO months_btw_spec_pay TIMES.
+
+        months_counter = months_counter + 1.
+
+        " calculate interest and back payment for current month
+        interest_month    = loan_remaining *  ( interest_rate / 100 ) / 12 .
+        repayment_month   = payment_month - interest_month.
+
+        " add monthly interest to total interest
+        interest_total = interest_total + interest_month.
+
+        " deduct repayment
+        loan_remaining = loan_remaining - repayment_month.
+
+        " add payment to repayment plan
+        APPEND |Month {  months_counter } - Interest: { interest_month } Remaining loan: { loan_remaining } |
+            TO repayment_plan.
+
+        IF loan_remaining < 0.
           EXIT.
         ENDIF.
-      ENDLOOP.
-    ENDLOOP.
-  ENDMETHOD.
+      ENDDO.
 
-
-  METHOD add_security_headers_to_req.
-    DATA hash TYPE string.
-    DATA nonce TYPE char32.
-    DATA mimetype TYPE char32.
-    DATA vhost TYPE http_header_reg-virtual_host.
-    DATA service_path TYPE string.
-    nonce =  response->get_header_field( name = nonce_pseudoheader_name ).
-    request->delete_header_field( name =  nonce_pseudoheader_name ).
-    hash = response->get_header_field( name =  hash_pseudoheader_name ).
-    response->delete_header_field( name =  hash_pseudoheader_name ).
-    DATA(service_path_with_ext_alias) = request->get_header_field(  name = '~path_translated'  ) .
-    DATA path_for_icf_tree TYPE icfrequest_path.
-    path_for_icf_tree = service_path_with_ext_alias.
-    DATA: lv_is_alias TYPE ABAP_BOOL.
-
-    IF is_alias IS SUPPLIED.
-      lv_is_alias = is_alias.
-    ELSE.
-      " Set to true so that the method get_service_attributes always be called
-      lv_is_alias = abap_true.
-    ENDIF.
-
-    service_path = path_for_icf_tree.
-    IF lv_is_alias = abap_true.
-      TRY.
-          cl_icf_tree=>get_service_attributes(
-            EXPORTING
-              service_path            =    path_for_icf_tree              " Service Path
-              vh_number               =    cl_http_server=>c_virtual_host             " Virtual Host Number
-            IMPORTING
-              endpoint_service_path   =   DATA(service_path_from_icf_tree)               " Service Path of End Point
-
-              rc                      =  DATA(rc)                 " Return Code
-          ).
-*      catch cx_for_icf_tree. " Processing of Administrative ICF Services
-*      catch cx_for_icf_tree. " Processing of Administrative ICF Services
-          IF rc <> 0.
-            service_path = service_path_with_ext_alias.
-          ELSE.
-            service_path = service_path_from_icf_tree.
-          ENDIF.
-        CATCH cx_for_icf_tree.
-          service_path = service_path_with_ext_alias.
-      ENDTRY.
-    ENDIF.
-    TRY.
-        IF cl_icf_system_login=>is_system_login_page_returned( ) = abap_true.
-          service_path = '/sap/bc/webdynpro'.
-        ENDIF.
-      CATCH cx_root ##NO_HANDLER.
-        "Ignore
-    ENDTRY.
-    IF service_path IS INITIAL.
-      RETURN.
-    ENDIF.
-    DATA(content_type) = response->get_header_field(  name = 'Content-Type'  ) ##NO_TEXT.
-    IF content_type IS INITIAL.
-      "content type ist unknown.
-    ENDIF.
-    SPLIT content_type AT ';' INTO mimetype DATA(rest).
-
-    DATA(lv_steampunk_header) = cl_ucon_helper=>get_profile_param_value( iv_name = 'ucon/xproxy_host_set' ).
-    IF lv_steampunk_header EQ '1'.
-      DATA(host_name) = request->get_header_field( name = 'x-proxy-host' ).
-      IF host_name IS INITIAL.
-        host_name = request->get_header_field( name = '~SERVER_NAME' ).
+      IF loan_remaining < 0.
+        EXIT.
       ENDIF.
-    ELSE.
-      host_name = request->get_header_field( name = '~SERVER_NAME' ).
-    ENDIF.
 
-    IF host_name IS INITIAL.
-      "host_name is unknown
-    ELSE.
-      if cl_ucon_http_cloud_runtime=>is_ucon_http_cloud_active( ) = abap_true.
-        data ucon_host_name type ucon_ip_addr_long.
-        ucon_host_name = host_name.
-        SELECT SINGLE UCONVHID FROM v_uconhttpvh WHERE hostname_long = @ucon_host_name INTO @vhost.
-*        SELECT SINGLE virthostname FROM uconvhhttpnames WHERE host_name = @ucon_host_name INTO @vhost. "#EC CI_NOORDER
-        IF sy-subrc <> 0.
-          "no virtual host has been defined
-            clear vhost.
-        endif.
-      else.
-        CLEAR vhost.
-      ENDIF.
-    ENDIF.
-    get_supported_header_names(
-      EXPORTING
-        mime_type  = mimetype
-      IMPORTING
-        header_tab = DATA(header_tab)
-    ).
-    DATA header_tab_cleaned TYPE header_names_table.
-    LOOP AT header_tab INTO DATA(wa_header).
-      DATA header_name TYPE string.
-      header_name = wa_header-name.
-      DATA(value) = response->get_header_field( name =  header_name ).
-      IF value IS INITIAL."skip all header fields which have already been set by the application
-        APPEND wa_header TO header_tab_cleaned.
-      ENDIF.
-    ENDLOOP.
-    add_headers(
-      EXPORTING
-        hash = hash
-        nonce = nonce
-        service_path  = service_path
-        virtual_host  = vhost
-        mimetype      = mimetype
-        header_tab = header_tab_cleaned
-      IMPORTING
-        export_header = DATA(header)
-    ).
-    LOOP AT header INTO DATA(wa).
-      response->set_header_field(
-        EXPORTING
-          name  = wa-name
-          value = wa-value
-      ).
-      DATA trace TYPE c LENGTH 255.
-      CONCATENATE 'HTTP Header Framework: Insert Header' ##NO_TEXT wa-name ' with content: ' ##NO_TEXT  wa-value  INTO trace. "trace entries should not be translated
-      cl_http_server=>trace( line =  trace ).
-    ENDLOOP.
+      " deduct the special repayment (n times a year, spec_repay_year over the year )
+      loan_remaining = loan_remaining - special_repayment.
 
-  ENDMETHOD.
+      "add special repayment to repayment plan
+      APPEND |Special repayment of { special_repayment }! Remaining loan { loan_remaining } |
+          TO repayment_plan.
+    ENDDO.
 
+* Output
+**********************************************************************
 
-  METHOD class_constructor.
-    CREATE OBJECT db_access TYPE cl_http_header_framework_db.
-    DATA sel_csp_header LIKE content_security_pol_ro_header.
-    sel_csp_header = content_security_policy_header.
-*    translate sel_csp_header to lower case.
-    SELECT SINGLE report_uri FROM http_report_uri WHERE http_header_name = @sel_csp_header INTO @g_report_uri.
-    IF sy-subrc <> 0 OR g_report_uri IS INITIAL.
-      g_report_uri = report_uri_path.
-*      g_report_uri = '/sap/bc/csp/report'.
-    ENDIF.
+    out->write( |Starting value of loan:   { loan_total        }| ).
+    out->write( |Monthly payment:          { payment_month     }| ).
+    out->write( |Special repayment         { special_repayment } every { months_btw_spec_pay } months. | ).
 
-    sel_csp_header = content_security_pol_ro_header.
-*    translate sel_csp_header to lower case.
-    SELECT SINGLE report_uri FROM http_report_uri WHERE http_header_name = @sel_csp_header INTO @g_report_uri_rep_only.
-    IF sy-subrc <> 0 OR g_report_uri_rep_only IS INITIAL.
-      g_report_uri_rep_only = report_uri_rep_only_path.
-*      g_report_uri_rep_only = '/sap/bc/csp/report_rep_only'.
-    ENDIF.
-  ENDMETHOD.
+    out->write( |-----------------------Result-----------------------| ).
+    out->write( |Total repayment after { months_counter DIV 12 } years and { months_counter MOD 12 } months. | ).
+    out->write( |Total interest paid: { interest_total } | ).
 
+    "Repayment Plan
+    out->write(
+                name = `Repayment Plan:`
+                data = repayment_plan
+              ).
 
-  METHOD expand_content.
-    CLEAR header_content.
-    DATA: result_tab_dollar TYPE match_result_tab.
-    DATA space_offset TYPE i.
-    DATA length_normal_text TYPE i.
-    DATA trust_list_name TYPE trusted_site_list_name.
-    DATA dollar_index TYPE sy-index.
-    DATA count_dollars TYPE i.
-    DATA add_space TYPE abap_bool.
-    DATA add_semikolon TYPE abap_bool.
-    FIND ALL OCCURRENCES OF '$' IN db_content RESULTS result_tab_dollar.
-
-    remove_escape_symbols( EXPORTING db_content = db_content result_tab_dollar = result_tab_dollar IMPORTING changed_content = DATA(content_without_escape_symbols) changed_result_tab = DATA(changed_result_tab) ).
-
-    count_dollars = lines( changed_result_tab ).
-    IF count_dollars > 0.
-      LOOP AT changed_result_tab REFERENCE INTO DATA(wa_dollar).
-        dollar_index = sy-tabix.
-        length_normal_text = wa_dollar->offset - space_offset.
-        CLEAR: add_space, add_semikolon.
-        CONCATENATE header_content content_without_escape_symbols+space_offset(length_normal_text) INTO header_content.
-
-
-        get_trustname_from_dbstring(
-          EXPORTING
-            i_db_content                   = content_without_escape_symbols
-            i_result_tab_dollar            = changed_result_tab
-            i_result_tab_dollar_index      = dollar_index
-            i_result_tab_dollar_wa         = wa_dollar
-          IMPORTING
-            e_trust_list_name              = trust_list_name
-            e_add_space                    = add_space
-            e_add_semikolon                = add_semikolon
-            e_end_of_processed_string_part = space_offset ).
-        get_trusted_list(
-          EXPORTING
-            name   = trust_list_name
-          IMPORTING
-            result = DATA(trusted_list_string)
-        ).
-        IF add_space = abap_true.
-          CONCATENATE trusted_list_string ' ' INTO trusted_list_string RESPECTING BLANKS.
-        ELSEIF add_semikolon = abap_true.
-          CONCATENATE trusted_list_string ';' INTO trusted_list_string RESPECTING BLANKS.
-        ENDIF.
-        CONCATENATE header_content trusted_list_string INTO header_content RESPECTING BLANKS.
-      ENDLOOP.
-
-
-      DATA last_offset TYPE i.
-
-      last_offset = wa_dollar->offset + 1 + strlen( trust_list_name ) + 1 ."+ 1 for dollar
-      IF last_offset < strlen( content_without_escape_symbols ).
-        CONCATENATE header_content ' ' content_without_escape_symbols+last_offset INTO header_content RESPECTING BLANKS.
-      ENDIF.
-    ELSE.
-      last_offset = 0.
-      header_content = content_without_escape_symbols.
-    ENDIF.
-*    data scheme type string.
-*    translate g_server_protocol to lower case.
-*    if strlen( g_server_protocol ) > 4 and g_server_protocol(5) = 'https'.
-*      scheme = 'https://'.
-*    else.
-*      scheme = 'http://'.
-*    endif.
-*    concatenate scheme g_servername ':' g_server_port g_report_uri into g_report_uri.
-    FIND 'report-uri' IN header_content.
-    data(report_uri_subrc) = sy-subrc.
-*    FIND 'report-to' IN header_content.
-*    data(report_to_subrc) = sy-subrc.
-
-    IF report_uri_subrc <> 0.
-      CONCATENATE header_content ' ; report-uri ' report_uri INTO header_content RESPECTING BLANKS ##NO_TEXT.
-    ENDIF.
-
-
-  ENDMETHOD.
-
-
-  METHOD find_service_path.
-    DATA: check_len TYPE i,
-          input_len TYPE i.
-    check_len = strlen( check ).
-    input_len = strlen( input ).
-
-    rv_check_ret = abap_false.
-
-    IF input_len = 0 AND check_len = 0.
-      rv_check_ret = abap_true.
-    ELSEIF check_len > 0 AND input_len >= check_len.
-      DATA: lower_case_check LIKE check,
-            lower_case_input LIKE input.
-      lower_case_check = check.
-      TRANSLATE lower_case_check TO LOWER CASE.
-      CONDENSE lower_case_check.
-      lower_case_input = input.
-      TRANSLATE lower_case_input TO LOWER CASE.
-      CONDENSE lower_case_input.
-      IF lower_case_input(check_len) = lower_case_check.
-        rv_check_ret = abap_true.
-      ENDIF.
-    ENDIF.
-
-
-  ENDMETHOD.
-
-
-  METHOD get_supported_header_names.
-    DATA header TYPE http_header_struct.
-    header-name = 'X-Content-Type-Options' ##NO_TEXT .
-    APPEND header TO header_tab.
-    CLEAR header.
-    header-name = 'X-XSS-Protection' ##NO_TEXT .
-    APPEND header TO header_tab.
-    CLEAR header.
-    header-name = 'Strict-Transport-Security' ##NO_TEXT .
-    APPEND header TO header_tab.
-    CLEAR header.
-    IF mime_type = 'text/html'  ##NO_TEXT.
-      DATA lv_suppressCSPHeader TYPE abap_boolean.
-      TRY.
-          cl_http_header_framework_api=>read_csp_conf(
-            EXPORTING
-              suppress_authority_check = abap_true
-            IMPORTING
-              suppress                 = lv_suppressCSPHeader
-          ).
-        CATCH cx_root.
-          "since we give it suppress_authority_check = abap_true this will never be reached
-      ENDTRY.
-      IF lv_suppressCSPHeader EQ abap_false.
-        header-name = content_security_policy_header.
-        header-header_type = 'C'.
-        APPEND header TO header_tab.
-        CLEAR header.
-      ENDIF.
-      header-name = content_security_pol_ro_header.
-      header-header_type = 'R'.
-      APPEND header TO header_tab.
-      CLEAR header.
-      header-name = 'X-Content-Security-Policy' ##NO_TEXT .
-      header-header_type = 'C'.
-      APPEND header TO header_tab.
-      CLEAR header.
-      header-name = 'X-Frame-Options' ##NO_TEXT .
-      APPEND header TO header_tab.
-      CLEAR header.
-      header-name = 'reporting-endpoints' ##NO_TEXT .
-      APPEND header TO header_tab.
-      CLEAR header.
-      header-name = 'report-to' ##NO_TEXT .
-      APPEND header TO header_tab.
-      CLEAR header.
-    ENDIF.
-  ENDMETHOD.
-
-
-  METHOD get_trusted_list.
-    CLEAR result.
-    IF name =  hash_placeholder.
-      IF g_hash IS NOT INITIAL.
-*        CONCATENATE '''hash-algorithm-' g_hash '''' INTO result.
-        result = |'{ g_hash }'|.
-      ENDIF.
-    ELSEIF name = nonce_placeholder.
-      IF g_nonce IS NOT INITIAL.
-        CONCATENATE '''nonce-' g_nonce '''' INTO result.
-      ENDIF.
-    ELSE.
-      db_access->get_trusted_site_list(
-        EXPORTING
-          name  = name
-        IMPORTING
-          table =  DATA(table)
-      ).
-      CLEAR result.
-      LOOP AT table REFERENCE INTO DATA(wa).
-        DATA size_content TYPE i.
-        DATA content TYPE string.
-        content = wa->content.
-        CONDENSE content.
-        size_content = strlen( wa->content ) - 1.
-        CONCATENATE result ' ' content INTO result RESPECTING BLANKS.
-      ENDLOOP.
-      CONDENSE result.
-      DATA(size_result) = strlen( result ) - 1 .
-    ENDIF.
-  ENDMETHOD.
-
-
-  METHOD get_trustname_from_dbstring.
-
-
-    IF i_db_content+i_result_tab_dollar_wa->offset CA ' '.
-      e_end_of_processed_string_part = sy-fdpos + i_result_tab_dollar_wa->offset .
-      IF  i_result_tab_dollar_index <  lines( i_result_tab_dollar ). .
-        READ TABLE i_result_tab_dollar INDEX i_result_tab_dollar_index + 1 REFERENCE INTO DATA(wa_dollar_next).
-        IF wa_dollar_next->offset < e_end_of_processed_string_part.
-          "if space is missing after dollar it should work anyway
-          e_end_of_processed_string_part = wa_dollar_next->offset.
-          e_add_space = abap_true.
-        ENDIF.
-      ENDIF.
-    ELSE.
-      e_end_of_processed_string_part = strlen( i_db_content ).
-
-    ENDIF.
-    DATA(length_list_name) = e_end_of_processed_string_part - i_result_tab_dollar_wa->offset - 1. "-1 for dollar
-
-    DATA(dollar_offset)  =  i_result_tab_dollar_wa->offset + 1.
-    e_trust_list_name = i_db_content+dollar_offset(length_list_name).
-
-  ENDMETHOD.
-
-
-  METHOD remove_escape_symbols.
-    CONCATENATE escape_symbol '$' INTO DATA(escape_plus_dollar) .
-    IF db_content CA escape_plus_dollar.
-      DATA pos TYPE i.
-      DATA length TYPE i.
-      CLEAR changed_content.
-      CLEAR changed_result_tab.
-      DATA count_removed_symbols TYPE i VALUE 0.
-      LOOP AT result_tab_dollar INTO DATA(dollar_wa).
-        length = dollar_wa-offset - pos - 2.
-        IF length > 0.
-          CONCATENATE changed_content db_content+pos(length) INTO changed_content RESPECTING BLANKS.
-        ENDIF.
-        DATA escape_symbol_pos TYPE i.
-        escape_symbol_pos = dollar_wa-offset - 2.
-        IF escape_symbol_pos >= 0 AND db_content+escape_symbol_pos(2) = escape_symbol.
-          pos = dollar_wa-offset. "skip escape symbol
-          count_removed_symbols = count_removed_symbols + 1.
-        ELSE.
-          pos = dollar_wa-offset - 2.
-          dollar_wa-offset = dollar_wa-offset - ( 2 * count_removed_symbols ).
-          APPEND dollar_wa TO changed_result_tab.
-        ENDIF.
-      ENDLOOP.
-      length = strlen( db_content ) - pos.
-      IF length > 0.
-        CONCATENATE changed_content db_content+pos(length) INTO changed_content RESPECTING BLANKS.
-      ENDIF.
-    ELSE.
-      changed_content = db_content.
-      changed_result_tab = result_tab_dollar.
-    ENDIF.
   ENDMETHOD.
 ENDCLASS.
